@@ -90,6 +90,16 @@ kexec(char *path, char **argv)
       sz = ph.vaddr + ph.memsz;
   }
   new_exec_ip = idup(ip);
+
+  // ***** ADDED *****
+  // Debug print to show discovered segments
+  printf("kexec: found %d segments for %s\n", num_segments, path);
+  for(i=0; i<num_segments; i++){
+    printf("  seg %d: va=0x%lx memsz=0x%lx filesz=0x%lx offset=0x%lx perm=%d\n",
+           i, segments[i].va, segments[i].memsz, segments[i].filesz, segments[i].offset, segments[i].perm);
+  }
+  // ************
+
   // ************
   
   iunlockput(ip);

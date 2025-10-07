@@ -475,7 +475,10 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   }
 
   // Check if it's a code/data segment page
+  printf("vmfault: pid=%d va=0x%lx. Checking %d segments.\n", p->pid, va, p->num_exec_segments);
   for (int i = 0; i < p->num_exec_segments; i++) {
+    struct exec_segment *seg = &p->exec_segments[i];
+    printf("  checking seg %d: va=0x%lx memsz=0x%lx\n", i, seg->va, seg->memsz);
     struct exec_segment *seg = &p->exec_segments[i];
     if (a >= seg->va && a < seg->va + seg->memsz) {
       char *mem = kalloc();

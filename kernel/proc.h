@@ -81,6 +81,15 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+
+struct exec_segment {
+  uint64 va;
+  uint64 memsz;
+  uint64 filesz;
+  uint64 offset; // <-- Corrected this to uint64
+  int perm;
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -104,4 +113,13 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  // ***** ADDED *****
+  // For demand paging
+  struct inode *exec_ip;       // inode of the executable file
+  int num_exec_segments;       // number of executable segments
+  
+  struct exec_segment exec_segments[MAX_EXEC_SEGS];
+  int in_exec;                 // flag to indicate if process is in exec
+  // ************
 };

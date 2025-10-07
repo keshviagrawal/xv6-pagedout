@@ -7,6 +7,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "defs.h"
 
 /*
  * the kernel's page table.
@@ -445,33 +446,120 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
-// allocate and map user memory if process is referencing a page
-// that was lazily allocated in sys_sbrk().
-// returns 0 if va is invalid or already mapped, or if
-// out of physical memory, and physical address if successful.
+// ***** ADDED *****
+// Handle a page fault.
+// returns the physical address of the page, or 0 on failure.
+//
+// This function is called by the trap handler when a page fault occurs.
+// It checks the faulting address and determines what to do:
+// 1. If it's a code/data page, load it from the executable.
+// 2. If it's a heap or stack page, allocate a new zero-filled page.
+// 3. If the address is invalid, terminate the process.
+// ************
+
+
+// ****** CHANGED **********
 uint64
 vmfault(pagetable_t pagetable, uint64 va, int read)
 {
-  uint64 mem;
   struct proc *p = myproc();
+  uint64 a = PGROUNDDOWN(va);
 
-  if (va >= p->sz)
-    return 0;
-  va = PGROUNDDOWN(va);
-  if(ismapped(pagetable, va)) {
-    return 0;
+  uint64 stack_base = p->sz - USERSTACK*PGSIZE;
+  uint64 guard_page = p->sz - (USERSTACK+1)*PGSIZE;
+
+  if (va >= p->sz || (a >= guard_page && a < stack_base)) {
+    goto invalid;
   }
-  mem = (uint64) kalloc();
-  if(mem == 0)
-    return 0;
-  memset((void *) mem, 0, PGSIZE);
-  if (mappages(p->pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
-    kfree((void *)mem);
-    return 0;
+
+  pte_t *pte = walk(pagetable, a, 0);
+  if(pte != 0 && (*pte & PTE_V)) {
+    if(((*pte & PTE_W) == 0) && read == 0) { // read==0 is write
+      cprintf("[pid %d] PGFLT(write) va=0x%lx -> TERMINATED (write to read-only page)\n", p->pid, va);
+      setkilled(p);
+      return 0;
+    }
+    return PTE2PA(*pte);
   }
-  return mem;
+
+  // Check if it's a code/data segment page
+  for (int i = 0; i < p->num_exec_segments; i++) {
+    struct exec_segment *seg = &p->exec_segments[i];
+    if (a >= seg->va && a < seg->va + seg->memsz) {
+      char *mem = kalloc();
+      if(mem == 0) goto kalloc_fail;
+      memset(mem, 0, PGSIZE);
+
+      uint page_offset = a - seg->va;
+      if (page_offset < seg->filesz) {
+        uint to_read = PGSIZE;
+        if (seg->filesz - page_offset < PGSIZE)
+          to_read = seg->filesz - page_offset;
+        
+        ilock(p->exec_ip);
+        if(readi(p->exec_ip, 0, (uint64)mem, seg->offset + page_offset, to_read) != to_read) {
+          iunlock(p->exec_ip);
+          kfree(mem);
+          goto readi_fail;
+        }
+        iunlock(p->exec_ip);
+      }
+
+      if (mappages(pagetable, a, PGSIZE, (uint64)mem, seg->perm | PTE_U) != 0) {
+        kfree(mem);
+        goto mappages_fail;
+      }
+      
+      cprintf("[pid %d] PGFLT(%s) va=0x%lx -> LOADEXEC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
+      cprintf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
+      return (uint64)mem;
+    }
+  }
+
+  if (!p->in_exec) {
+    if (a >= stack_base) { // In stack region
+      if (a < PGROUNDDOWN(p->trapframe->sp - 1)) {
+        cprintf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (stack jump)\n", p->pid, va);
+        setkilled(p);
+        return 0;
+      }
+    }
+  }
+
+  char *mem = kalloc();
+  if(mem == 0) goto kalloc_fail;
+  memset(mem, 0, PGSIZE);
+
+  int perm = PTE_R | PTE_W | PTE_U;
+  if (mappages(pagetable, a, PGSIZE, (uint64)mem, perm) != 0) {
+    kfree(mem);
+    goto mappages_fail;
+  }
+
+  cprintf("[pid %d] PGFLT(%s) va=0x%lx -> ALLOC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
+  cprintf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
+  return (uint64)mem;
+
+kalloc_fail:
+  cprintf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (kalloc failed)\n", p->pid, read ? "read" : "write", a);
+  setkilled(p);
+  return 0;
+readi_fail:
+  cprintf("[pid %d] PGFLT(loadexec) va=0x%lx -> TERMINATED (readi failed)\n", p->pid, a);
+  setkilled(p);
+  return 0;
+mappages_fail:
+  cprintf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (mappages failed)\n", p->pid, read ? "read" : "write", a);
+  setkilled(p);
+  return 0;
+invalid:
+  cprintf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (invalid address)\n", p->pid, va);
+  setkilled(p);
+  return 0;
 }
 
+// ***** REMOVED *****
+/*
 int
 ismapped(pagetable_t pagetable, uint64 va)
 {
@@ -484,3 +572,8 @@ ismapped(pagetable_t pagetable, uint64 va)
   }
   return 0;
 }
+*/
+// ************
+
+
+// Implemented the page fault handler (vmfault) which is the core of the demand paging logic. It now handles faults by loading pages from the executable, or allocating new pages for the heap and stack as needed.

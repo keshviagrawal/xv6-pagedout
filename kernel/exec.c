@@ -7,7 +7,9 @@
 #include "defs.h"
 #include "elf.h"
 
-static int loadseg(pde_t *, uint64, struct inode *, uint, uint);
+// ***** REMOVED *****
+// static int loadseg(pde_t *, uint64, struct inode *, uint, uint);
+// ************
 
 // map ELF permissions to PTE permission bits.
 int flags2perm(int flags)
@@ -34,6 +36,13 @@ kexec(char *path, char **argv)
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
   struct proc *p = myproc();
+  
+  // ***** ADDED *****
+  // These will hold the new process's properties until we commit them.
+  struct exec_segment segments[MAX_EXEC_SEGS];
+  int num_segments = 0;
+  struct inode *new_exec_ip = 0;
+  // ************
 
   begin_op();
 
@@ -55,7 +64,9 @@ kexec(char *path, char **argv)
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
 
-  // Load program into memory.
+  // ***** ADDED and changed few things *****
+  // For demand paging, we don't load segments now.
+  // We just record the information for on-demand loading.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
     if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
       goto bad;
@@ -67,31 +78,37 @@ kexec(char *path, char **argv)
       goto bad;
     if(ph.vaddr % PGSIZE != 0)
       goto bad;
-    uint64 sz1;
-    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0)
+    if(num_segments >= MAX_EXEC_SEGS)
       goto bad;
-    sz = sz1;
-    if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
-      goto bad;
+    segments[num_segments].va = ph.vaddr;
+    segments[num_segments].memsz = ph.memsz;
+    segments[num_segments].filesz = ph.filesz;
+    segments[num_segments].offset = ph.off;
+    segments[num_segments].perm = flags2perm(ph.flags);
+    num_segments++;
+    if(ph.vaddr + ph.memsz > sz)
+      sz = ph.vaddr + ph.memsz;
   }
+  new_exec_ip = idup(ip);
+  // ************
+  
   iunlockput(ip);
   end_op();
   ip = 0;
 
   p = myproc();
   uint64 oldsz = p->sz;
+  struct inode *old_exec_ip = p->exec_ip;
 
-  // Allocate some pages at the next page boundary.
-  // Make the first inaccessible as a stack guard.
-  // Use the rest as the user stack.
+  // ***** ADDED and changed few things *****
+  // For demand paging, we just reserve the address space for the stack.
+  // It will be allocated on a page fault.
   sz = PGROUNDUP(sz);
-  uint64 sz1;
-  if((sz1 = uvmalloc(pagetable, sz, sz + (USERSTACK+1)*PGSIZE, PTE_W)) == 0)
-    goto bad;
-  sz = sz1;
-  uvmclear(pagetable, sz-(USERSTACK+1)*PGSIZE);
+  sz += (USERSTACK + 1) * PGSIZE;
   sp = sz;
   stackbase = sp - USERSTACK*PGSIZE;
+  p->in_exec = 1; // Signal that we are in exec
+  // ************
 
   // Copy argument strings into new stack, remember their
   // addresses in ustack[].
@@ -116,6 +133,10 @@ kexec(char *path, char **argv)
   if(copyout(pagetable, sp, (char *)ustack, (argc+1)*sizeof(uint64)) < 0)
     goto bad;
 
+  // ***** ADDED *****
+  p->in_exec = 0; // End of exec-specific fault handling
+  // ************
+
   // a0 and a1 contain arguments to user main(argc, argv)
   // argc is returned via the system call return
   // value, which goes in a0.
@@ -133,13 +154,23 @@ kexec(char *path, char **argv)
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = ulib.c:start()
   p->trapframe->sp = sp; // initial stack pointer
+  // ***** ADDED *****
+  p->exec_ip = new_exec_ip;
+  p->num_exec_segments = num_segments;
+  memmove(p->exec_segments, segments, sizeof(segments));
+  // ************
   proc_freepagetable(oldpagetable, oldsz);
+  if(old_exec_ip)
+    iput(old_exec_ip);
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
+  p->in_exec = 0;
   if(pagetable)
     proc_freepagetable(pagetable, sz);
+  if(new_exec_ip)
+    iput(new_exec_ip);
   if(ip){
     iunlockput(ip);
     end_op();
@@ -147,27 +178,5 @@ kexec(char *path, char **argv)
   return -1;
 }
 
-// Load an ELF program segment into pagetable at virtual address va.
-// va must be page-aligned
-// and the pages from va to va+sz must already be mapped.
-// Returns 0 on success, -1 on failure.
-static int
-loadseg(pagetable_t pagetable, uint64 va, struct inode *ip, uint offset, uint sz)
-{
-  uint i, n;
-  uint64 pa;
 
-  for(i = 0; i < sz; i += PGSIZE){
-    pa = walkaddr(pagetable, va + i);
-    if(pa == 0)
-      panic("loadseg: address should exist");
-    if(sz - i < PGSIZE)
-      n = sz - i;
-    else
-      n = PGSIZE;
-    if(readi(ip, 0, (uint64)pa, offset+i, n) != n)
-      return -1;
-  }
-  
-  return 0;
-}
+// basically it has been modified in such a way that it no longer load the entire program into memory at once. Instead, it sets up the necessary info for pages to be loaded on demand when a page fault occurs

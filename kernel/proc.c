@@ -169,6 +169,15 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  // ***** ADDED *****
+  // Clean up demand paging resources
+  if(p->exec_ip) {
+    iput(p->exec_ip);
+    p->exec_ip = 0;
+  }
+  p->in_exec = 0;
+  // ************
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -275,6 +284,14 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // ***** ADDED *****
+  // Copy demand paging information from parent to child.
+  np->num_exec_segments = p->num_exec_segments;
+  memmove(np->exec_segments, p->exec_segments, sizeof(p->exec_segments));
+  if(p->exec_ip)
+    np->exec_ip = idup(p->exec_ip);
+  // ************
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -688,3 +705,6 @@ procdump(void)
     printf("\n");
   }
 }
+
+
+//  Updated freeproc to release demand paging resources and kfork to correctly copy demand paging information to child processes.

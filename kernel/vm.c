@@ -94,7 +94,7 @@ kvminithart()
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
-おそらく
+//おそらく
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
@@ -467,7 +467,7 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   pte_t *pte = walk(pagetable, a, 0);
   if(pte != 0 && (*pte & PTE_V)) {
     if(((*pte & PTE_W) == 0) && read == 0) { // read==0 is write
-      printf("[pid %d] PGFLT(write) va=0x%lx -> TERMINATED (write to read-only page)\n", p->pid, va);
+      printf("[pid %d] PGFLT(write) va=0x%lx -> TERMINATED (write to read-only page)\\n", p->pid, va);
       setkilled(p);
       return 0;
     }
@@ -502,8 +502,8 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
         goto mappages_fail;
       }
       
-      printf("[pid %d] PGFLT(%s) va=0x%lx -> LOADEXEC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
-      printf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
+      printf("[pid %d] PGFLT(%s) va=0x%lx -> LOADEXEC pa=0x%lx\\n", p->pid, read ? "read" : "write", a, (uint64)mem);
+      printf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\\n", p->pid, a, (uint64)mem);
       return (uint64)mem;
     }
   }
@@ -514,7 +514,7 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   if (a >= stack_base) {
     if (!p->in_exec) {
       if (a < PGROUNDDOWN(p->trapframe->sp - 1)) {
-        printf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (stack jump too far)\n", p->pid, va);
+        printf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (stack jump too far)\\n", p->pid, va);
         setkilled(p);
         return 0;
       }
@@ -526,8 +526,8 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
       kfree(mem);
       goto mappages_fail;
     }
-    printf("[pid %d] PGFLT(%s) va=0x%lx -> ALLOC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
-    printf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
+    printf("[pid %d] PGFLT(%s) va=0x%lx -> ALLOC pa=0x%lx\\n", p->pid, read ? "read" : "write", a, (uint64)mem);
+    printf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\\n", p->pid, a, (uint64)mem);
     return (uint64)mem;
   }
 
@@ -540,28 +540,27 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
       kfree(mem);
       goto mappages_fail;
     }
-    printf("[pid %d] PGFLT(%s) va=0x%lx -> ALLOC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
-    printf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
+    printf("[pid %d] PGFLT(%s) va=0x%lx -> ALLOC pa=0x%lx\\n", p->pid, read ? "read" : "write", a, (uint64)mem);
+    printf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\\n", p->pid, a, (uint64)mem);
     return (uint64)mem;
   }
 
   goto invalid;
 
 kalloc_fail:
-  printf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (kalloc failed)\n", p->pid, read ? "read" : "write", a);
+  printf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (kalloc failed)\\n", p->pid, read ? "read" : "write", a);
   setkilled(p);
   return 0;
 readi_fail:
-  printf("[pid %d] PGFLT(loadexec) va=0x%lx -> TERMINATED (readi failed)\n", p->pid, a);
+  printf("[pid %d] PGFLT(loadexec) va=0x%lx -> TERMINATED (readi failed)\\n", p->pid, a);
   setkilled(p);
   return 0;
 mappages_fail:
-  printf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (mappages failed)\n", p->pid, read ? "read" : "write", a);
+  printf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (mappages failed)\\n", p->pid, read ? "read" : "write", a);
   setkilled(p);
   return 0;
 invalid:
-  printf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (invalid address)\n", p->pid, va);
+  printf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (invalid address)\\n", p->pid, va);
   setkilled(p);
   return 0;
 }
-

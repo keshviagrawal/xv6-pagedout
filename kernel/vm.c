@@ -7,7 +7,6 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
-#include "defs.h"
 
 /*
  * the kernel's page table.
@@ -95,6 +94,7 @@ kvminithart()
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
+おそらく
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
@@ -387,7 +387,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
+      if((pa0 = vmfault(pagetable, va0, 1)) == 0) { // Changed to indicate read
         return -1;
       }
     }
@@ -416,8 +416,11 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) {
+      if((pa0 = vmfault(pagetable, va0, 1)) == 0) { // Changed to indicate read
+        return -1;
+      }
+    }
     n = PGSIZE - (srcva - va0);
     if(n > max)
       n = max;
@@ -446,36 +449,25 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
-// ***** ADDED *****
+
+// ***** REVISED vmfault *****
 // Handle a page fault.
 // returns the physical address of the page, or 0 on failure.
-//
-// This function is called by the trap handler when a page fault occurs.
-// It checks the faulting address and determines what to do:
-// 1. If it's a code/data page, load it from the executable.
-// 2. If it's a heap or stack page, allocate a new zero-filled page.
-// 3. If the address is invalid, terminate the process.
-// ************
-
-
-// ****** CHANGED **********
 uint64
 vmfault(pagetable_t pagetable, uint64 va, int read)
 {
   struct proc *p = myproc();
-  uint64 a = PGROUNDDOWN(va);
 
-  uint64 stack_base = p->sz - USERSTACK*PGSIZE;
-  uint64 guard_page = p->sz - (USERSTACK+1)*PGSIZE;
-
-  if (va >= p->sz || (a >= guard_page && a < stack_base)) {
+  if (va >= p->sz) {
     goto invalid;
   }
+
+  uint64 a = PGROUNDDOWN(va);
 
   pte_t *pte = walk(pagetable, a, 0);
   if(pte != 0 && (*pte & PTE_V)) {
     if(((*pte & PTE_W) == 0) && read == 0) { // read==0 is write
-      cprintf("[pid %d] PGFLT(write) va=0x%lx -> TERMINATED (write to read-only page)\n", p->pid, va);
+      printf("[pid %d] PGFLT(write) va=0x%lx -> TERMINATED (write to read-only page)\n", p->pid, va);
       setkilled(p);
       return 0;
     }
@@ -510,70 +502,66 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
         goto mappages_fail;
       }
       
-      cprintf("[pid %d] PGFLT(%s) va=0x%lx -> LOADEXEC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
-      cprintf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
+      printf("[pid %d] PGFLT(%s) va=0x%lx -> LOADEXEC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
+      printf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
       return (uint64)mem;
     }
   }
 
-  if (!p->in_exec) {
-    if (a >= stack_base) { // In stack region
+  uint64 stack_base = p->sz - USERSTACK*PGSIZE;
+
+  // Check if it's a stack page
+  if (a >= stack_base) {
+    if (!p->in_exec) {
       if (a < PGROUNDDOWN(p->trapframe->sp - 1)) {
-        cprintf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (stack jump)\n", p->pid, va);
+        printf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (stack jump too far)\n", p->pid, va);
         setkilled(p);
         return 0;
       }
     }
+    char *mem = kalloc();
+    if(mem == 0) goto kalloc_fail;
+    memset(mem, 0, PGSIZE);
+    if (mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_R | PTE_W | PTE_U) != 0) {
+      kfree(mem);
+      goto mappages_fail;
+    }
+    printf("[pid %d] PGFLT(%s) va=0x%lx -> ALLOC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
+    printf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
+    return (uint64)mem;
   }
 
-  char *mem = kalloc();
-  if(mem == 0) goto kalloc_fail;
-  memset(mem, 0, PGSIZE);
-
-  int perm = PTE_R | PTE_W | PTE_U;
-  if (mappages(pagetable, a, PGSIZE, (uint64)mem, perm) != 0) {
-    kfree(mem);
-    goto mappages_fail;
+  uint64 guard_page_start = p->sz - (USERSTACK+1)*PGSIZE;
+  if (a < guard_page_start) {
+    char *mem = kalloc();
+    if(mem == 0) goto kalloc_fail;
+    memset(mem, 0, PGSIZE);
+    if (mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_R | PTE_W | PTE_U) != 0) {
+      kfree(mem);
+      goto mappages_fail;
+    }
+    printf("[pid %d] PGFLT(%s) va=0x%lx -> ALLOC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
+    printf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
+    return (uint64)mem;
   }
 
-  cprintf("[pid %d] PGFLT(%s) va=0x%lx -> ALLOC pa=0x%lx\n", p->pid, read ? "read" : "write", a, (uint64)mem);
-  cprintf("[pid %d] RESIDENT va=0x%lx pa=0x%lx seq=0\n", p->pid, a, (uint64)mem);
-  return (uint64)mem;
+  goto invalid;
 
 kalloc_fail:
-  cprintf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (kalloc failed)\n", p->pid, read ? "read" : "write", a);
+  printf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (kalloc failed)\n", p->pid, read ? "read" : "write", a);
   setkilled(p);
   return 0;
 readi_fail:
-  cprintf("[pid %d] PGFLT(loadexec) va=0x%lx -> TERMINATED (readi failed)\n", p->pid, a);
+  printf("[pid %d] PGFLT(loadexec) va=0x%lx -> TERMINATED (readi failed)\n", p->pid, a);
   setkilled(p);
   return 0;
 mappages_fail:
-  cprintf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (mappages failed)\n", p->pid, read ? "read" : "write", a);
+  printf("[pid %d] PGFLT(%s) va=0x%lx -> TERMINATED (mappages failed)\n", p->pid, read ? "read" : "write", a);
   setkilled(p);
   return 0;
 invalid:
-  cprintf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (invalid address)\n", p->pid, va);
+  printf("[pid %d] PGFLT(invalid) va=0x%lx -> TERMINATED (invalid address)\n", p->pid, va);
   setkilled(p);
   return 0;
 }
 
-// ***** REMOVED *****
-/*
-int
-ismapped(pagetable_t pagetable, uint64 va)
-{
-  pte_t *pte = walk(pagetable, va, 0);
-  if (pte == 0) {
-    return 0;
-  }
-  if (*pte & PTE_V){
-    return 1;
-  }
-  return 0;
-}
-*/
-// ************
-
-
-// Implemented the page fault handler (vmfault) which is the core of the demand paging logic. It now handles faults by loading pages from the executable, or allocating new pages for the heap and stack as needed.
